@@ -33,12 +33,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.activity import get_activity, log_activity
-from app.identity import llm_checks_allowed, resolve_identity
+from app.identity import ApiKeyStoreUnavailableError, InvalidApiKeyError, llm_checks_allowed, resolve_identity
 from app.cognee_runtime.bootstrap import configure_cognee
 from app.cognee_runtime.forget import forget_memory
 from app.cognee_runtime.graph import count_nodes, graph_view, list_sessions, session_timeline
@@ -90,6 +90,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(InvalidApiKeyError)
+async def invalid_api_key(_request: Request, _exc: InvalidApiKeyError) -> JSONResponse:
+    return JSONResponse(status_code=401, content={"detail": "API key is invalid or revoked."})
+
+
+@app.exception_handler(ApiKeyStoreUnavailableError)
+async def api_key_store_unavailable(_request: Request, _exc: ApiKeyStoreUnavailableError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "API key validation is temporarily unavailable."})
 
 app.add_middleware(
     CORSMiddleware,
