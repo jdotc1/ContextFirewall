@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional, Set
@@ -26,6 +27,15 @@ from typing import Optional, Set
 DEMO_NAMESPACE = "demo"
 PUBLIC_NAMESPACE = "public"
 API_KEY_PREFIX = "cf_live_"
+logger = logging.getLogger(__name__)
+
+
+class InvalidApiKeyError(Exception):
+    """An API-key-shaped credential was presented but was unknown or revoked."""
+
+
+class ApiKeyStoreUnavailableError(Exception):
+    """A presented API key could not be checked against the credential store."""
 
 
 def hash_api_key(raw_key: str) -> str:
@@ -99,15 +109,12 @@ async def _get_pool():
 
 
 async def _namespace_for_key(raw_key: str) -> Optional[str]:
-    """Resolve a key to its namespace, failing CLOSED on any store error.
-
-    If the key table is unreachable (missing migration, connection loss), the
-    caller is treated as anonymous — never a 500, and never a write grant.
-    """
+    """Resolve a key to its namespace; keep invalid keys distinct from store errors."""
     try:
         pool = await _get_pool()
         if pool is None:
-            return None
+            logger.error("API key validation unavailable: no key store configured")
+            raise ApiKeyStoreUnavailableError("API key validation is unavailable")
         key_hash = hash_api_key(raw_key)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -125,15 +132,20 @@ async def _namespace_for_key(raw_key: str) -> Optional[str]:
             except Exception:  # noqa: BLE001
                 pass
         return str(row["namespace"])
-    except Exception:  # noqa: BLE001
-        return None
+    except ApiKeyStoreUnavailableError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Avoid logging raw credentials, connection strings, or SQL error text.
+        logger.error("API key validation failed (%s)", type(exc).__name__)
+        raise ApiKeyStoreUnavailableError("API key validation is unavailable") from None
 
 
 async def resolve_identity(authorization: Optional[str], env_write_token: Optional[str] = None) -> Identity:
     """Resolve the caller from the Authorization header.
 
     Order: a valid API key wins (its account namespace); otherwise the optional
-    ``CF_WRITE_TOKEN`` admin override; otherwise anonymous demo-read.
+    ``CF_WRITE_TOKEN`` admin override; otherwise anonymous demo-read. An invalid
+    presented API key never falls back to anonymous data.
     """
     token = bearer_token(authorization)
     if looks_like_api_key(token):
@@ -146,7 +158,7 @@ async def resolve_identity(authorization: Optional[str], env_write_token: Option
                 allow_demo_write=False,
                 read_namespaces={ns},
             )
-        return _anonymous()  # unknown/revoked key -> no privileges
+        raise InvalidApiKeyError("API key is invalid or revoked")
     env_token = env_write_token if env_write_token is not None else os.getenv("CF_WRITE_TOKEN")
     if env_token and token and hmac.compare_digest(token.encode(), env_token.encode()):
         return Identity(
