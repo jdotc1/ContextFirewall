@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 
+from app import identity
 from app.identity import (
+    ApiKeyStoreUnavailableError,
     Identity,
+    InvalidApiKeyError,
     bearer_token,
     hash_api_key,
     llm_checks_allowed,
@@ -59,9 +63,40 @@ def test_resolve_identity_admin_token(monkeypatch):
 
 
 def test_resolve_identity_unknown_key_when_no_store(monkeypatch):
-    # No DB_HOST -> no key store -> an api-key-shaped token resolves to anonymous.
+    # Missing key store is an outage, never an anonymous read.
+    monkeypatch.setattr(identity, "_pool", None)
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("CF_WRITE_TOKEN", raising=False)
-    ident = asyncio.run(resolve_identity("Bearer cf_live_unknown"))
-    assert ident.kind == "anon"
-    assert ident.can_write is False
+    with pytest.raises(ApiKeyStoreUnavailableError):
+        asyncio.run(resolve_identity("Bearer cf_live_unknown"))
+
+
+def test_resolve_identity_known_key(monkeypatch):
+    async def lookup(_key):
+        return "tenant-123"
+
+    monkeypatch.setattr(identity, "_namespace_for_key", lookup)
+    ident = asyncio.run(resolve_identity("Bearer cf_live_valid"))
+    assert ident.kind == "apikey"
+    assert ident.can_write is True
+    assert ident.read_namespaces == {"tenant-123"}
+
+
+def test_resolve_identity_unknown_or_revoked_key_is_not_anonymous(monkeypatch):
+    async def lookup(_key):
+        return None
+
+    monkeypatch.setattr(identity, "_namespace_for_key", lookup)
+    with pytest.raises(InvalidApiKeyError):
+        asyncio.run(resolve_identity("Bearer cf_live_revoked"))
+
+
+def test_resolve_identity_store_failure_is_not_anonymous(monkeypatch, caplog):
+    async def unavailable():
+        raise RuntimeError("sensitive postgres connection detail")
+
+    monkeypatch.setattr(identity, "_get_pool", unavailable)
+    with pytest.raises(ApiKeyStoreUnavailableError), caplog.at_level("ERROR"):
+        asyncio.run(resolve_identity("Bearer cf_live_key"))
+    assert "RuntimeError" in caplog.text
+    assert "sensitive postgres connection detail" not in caplog.text
