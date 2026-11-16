@@ -79,14 +79,19 @@ function ConsoleInner() {
   const writeGateMessage =
     "Read-only demo mode. Open Account & keys, sign in, and create an API key to write to your namespace.";
 
-  const writeErrorMessage = useCallback((e: unknown, fallback: string) => {
+  const requestErrorMessage = useCallback((e: unknown, fallback: string) => {
     if (e instanceof ApiError) {
-      if (e.status === 401) return writeGateMessage;
+      if (e.status === 401) {
+        return activeKey
+          ? "Your saved API key was rejected or revoked. Open Account & keys to replace it."
+          : writeGateMessage;
+      }
+      if (e.status === 503) return "API key validation is temporarily unavailable. Please retry shortly.";
       return e.body || fallback;
     }
     if (e instanceof Error) return e.message || fallback;
     return fallback;
-  }, []);
+  }, [activeKey]);
 
   const inspectMemory = useCallback(
     (memoryId: string) => {
@@ -101,12 +106,12 @@ function ConsoleInner() {
     setError(null);
     try {
       setPack(await api.pack(q));
-    } catch (e: any) {
-      setError(e.message || "request failed");
+    } catch (e) {
+      setError(requestErrorMessage(e, "Request failed."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [requestErrorMessage]);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -181,7 +186,7 @@ function ConsoleInner() {
       setEvents(null);
       run(DEFAULT_QUERY);
     } catch (e: any) {
-      setError(writeErrorMessage(e, "Reload sample project failed."));
+      setError(requestErrorMessage(e, "Reload sample project failed."));
     } finally {
       setSeeding(false);
     }
@@ -198,7 +203,7 @@ function ConsoleInner() {
       await refreshHealth();
       if (pack) run(pack.query);
     } catch (e: any) {
-      setError(writeErrorMessage(e, "Forget failed."));
+      setError(requestErrorMessage(e, "Forget failed."));
     }
   };
 
