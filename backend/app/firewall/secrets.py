@@ -124,6 +124,18 @@ _PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
         r"|([^\s\"',;]+))"
     )),
 
+    # These common environment names carry credentials even when the value is
+    # short or low-entropy. Generic assignment rules only cover typed suffixes.
+    # Preserve the quote parsing and placeholder exclusions used for DB secrets.
+    # Low-entropy values in these credential-specific environment variables must
+    # be masked even when provider token prefixes and entropy heuristics miss them.
+    ("service_token_env", "service authentication environment variable", re.compile(
+        r"(?im)(?<![A-Za-z0-9_])(?:VAULT_TOKEN|GITHUB_TOKEN|AWS_SESSION_TOKEN)[ \t]*=[ \t]*"
+        r"(?!\$\{)(?:\"((?:\\[^\r\n]|\\(?=\r?$)|[^\"\\\r\n])+)(?:\"|(?=\r?$))"
+        r"|'((?:\\[^\r\n]|\\(?=\r?$)|[^'\\\r\n])+)(?:'|(?=\r?$))"
+        r"|([^\s\"',;]+))"
+    )),
+
     ("google_api_key", "Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     # Includes classic/OAuth/App credentials and fine-grained personal access tokens.
     ("github_token", "GitHub token", re.compile(
